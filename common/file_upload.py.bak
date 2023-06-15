@@ -1,0 +1,186 @@
+import os
+import sys
+import datetime
+from ftplib import FTP
+from file_upload_ui import Ui_MainWindow
+from PyQt5 import QtCore
+#from PyQt5.QtWidgets import QApplication, QMainWindow,QFileDialog
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import QStringListModel
+import logging
+import paramiko
+import configparser
+
+
+class MainPage(QMainWindow,Ui_MainWindow):
+    def __init__(self):
+        super(MainPage,self).__init__()
+        self.setupUi(self)
+
+        self.transport=None   #传输对象
+        self.channel=None   #通道
+        self.localFile=''   #本地文件路径
+
+        # 下拉款加载配置
+        #  实例化configParser对象
+        self.config = configparser.ConfigParser()
+
+        try:
+            # -read读取ini文件
+            self.config.read('servicesConfig.ini', encoding='UTF-8')
+        except Exception as e:
+            print("打开文件错误！")
+        sections = self.config.sections()
+        self.cb_selectServ.addItem('请选择')
+        self.cb_selectEnvir.addItem('请选择')
+        for section in sections:
+            self.cb_selectServ.addItem(section)
+            self.cb_selectEnvir.addItem(section)
+        self.serviceConfig = {}
+
+
+        self.setButtonState(False)
+
+        # 绑定槽函数
+        self.cb_selectEnvir.activated[str].connect(self.fillInfo)
+        self.btn_reset.clicked.connect(self.reset)
+        self.btn_clear.clicked.connect(self.clearLog)
+        #self.btn_upload.clicked.connect(self.open_file)
+#        self.btn_config_service.clicked.connect(self.config_service)
+        self.btn_connect.clicked.connect(self.connectServer)
+        self.cb_selectServ.activated[str].connect(self.listService) # 条目发生改变，发射信号，传递条目内容
+        self.btn_disConnect.clicked.connect(self.closeServer)
+        self.btn_upload.clicked.connect(self.upload)
+        self.btn_selectFile.clicked.connect(self.selectFile)
+
+
+
+
+    def setButtonState(self,state):
+        self.btn_disConnect.setEnabled(state)
+        self.btn_uploadAndApply.setEnabled(state)
+        self.btn_upload.setEnabled(state)
+        self.btn_selectFile.setEnabled(state)
+    # 连接服务器
+    def connectServer(self):
+        
+        self.host = self.le_ip.text()
+        self.port = self.le_port.text()
+        self.passwd = self.le_passwd.text()
+        self.user = self.le_user.text()
+
+        try:
+            if self.transport is None:
+                self.transport=paramiko.Transport('10.3.30.39',22)
+                self.transport.banner_timeout = 60
+                self.transport.connect(username='root',password='wf!3$ZM0')
+                self.sftp=paramiko.SFTPClient.from_transport(self.transport)
+                
+                 # 打开一个通道
+                self.transport.start_client()
+                self.channel = self.transport.open_session()
+                self.channel.settimeout(7200)
+                self.channel.get_pty()         #获取一个终端
+                self.channel.invoke_shell()    # 调用shell命令激活器
+                
+                self.setButtonState(True)
+
+            self.printLog("已连接！！")
+        except:
+            logging.warning('network connect time out')  # 打印日志信息
+
+    # 关闭服务器连接
+    def closeServer(self):
+        if self.transport is not None:
+            self.transport.close()
+            self.setButtonState(False)
+        if self.channel is not None:
+            self.channel.close()
+            self.setButtonState(False)
+        self.printLog("已断开！！")
+        
+
+    # 根据选择环境填充连接信息和服务信息
+    def fillInfo(self,text):
+        if '请选择' == text:
+            return
+        try:
+            self.le_ip.setText(self.config.get(text,"conn_ip"))
+            self.le_port.setText(self.config.get(text, "conn_port"))
+            self.le_user.setText(self.config.get(text, "conn_user"))
+            self.le_passwd.setText(self.config.get(text, "conn_passwd"))
+
+            options = self.config.options(text)
+            options_serv=list(filter(lambda option:'serv' in option,options))
+
+            self.setModle(self.tw_services, options_serv, text)
+
+        except:
+            self.printLog("加载失败，请检查文件配置！")
+
+    # 清空输入框
+    def reset(self):
+        self.le_ip.clear()
+        self.le_port.clear()
+        self.le_user.clear()
+        self.le_passwd.clear()
+        self.printLog("清空输入框！")
+    # 清空日志
+    def clearLog(self):
+        self.tb_log.clear()
+    # 打开文件
+    def selectFile(self):
+        open_filename = QFileDialog.getOpenFileName(None, '选择文件', '', 'All files(*.*)')
+        if open_filename[0] != '':
+            self.localFile = open_filename[0]
+            self.printLog("已选中文件："+open_filename[0])
+    # 上传文件
+    def upload(self):
+        try:
+            items = self.tw_services.selectedItems()
+            localFile = self.localFile
+            targetFile = items[1].text()+os.path.basename(localFile)
+
+            self.sftp.put(localFile, targetFile)  # 上传
+            self.printLog("文件已上传！")
+        except:
+            self.printLog("上传失败，请检查是否已连接或上传路径正确！")
+
+    # 打印日志
+    def printLog(self,content):
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.tb_log.append(now+":"+content)
+
+    # 设置表格样式,加载数据
+    def setModle(self,tableWidget,options,text):
+        tableWidget.setRowCount(len(options))
+        tableWidget.setColumnCount(2)
+        # 设置服务配置列表表头
+        tableWidget.setHorizontalHeaderLabels(['参数名', '参数值'])
+        tableWidget.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # 垂直拉伸填充表格
+        header = tableWidget.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        for i in range(len(options)):
+            newItem = QTableWidgetItem(str(options[i][5:]))#插入参数名
+            tableWidget.setItem(i, 0, newItem)
+            newItem = QTableWidgetItem(str(self.config.get(text,options[i])))#插入参数值
+            tableWidget.setItem(i, 1, newItem)
+    # 通过选择的项目来加载配置
+    def listService(self,text):
+        if '请选择' == text:
+            return
+        options = self.config.options(text)
+        self.setModle(self.tw_configItems,options,text)
+
+    def config_service(self):
+        import ConfigService
+        self.var_confService = config_service.ConfigService()
+        self.var_confService.show()
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    mPage = MainPage()
+    mPage.show()
+    sys.exit(app.exec_())
